@@ -1,0 +1,902 @@
+openapi: 3.0.0
+info:
+  title: Travel Lead Management API
+  version: 1.0.0
+  description: Backend API for managing travel leads, quotes, and customer inquiries
+  contact:
+    name: API Support
+    email: support@travelapp.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Development server
+  - url: https://api.travelapp.com/api/v1
+    description: Production server
+
+components:
+  schemas:
+    # Response Wrappers
+    SuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+        - meta
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+        - meta
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - PERMISSION_DENIED
+                - NOT_FOUND
+                - CONFLICT
+                - INTERNAL_ERROR
+            message:
+              type: string
+            details:
+              type: array
+              items:
+                type: object
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+
+    ResponseMeta:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        response_time_ms:
+          type: integer
+
+    # Data Models
+    Organization:
+      type: object
+      required:
+        - org_id
+        - org_name
+      properties:
+        org_id:
+          type: string
+          format: uuid
+        org_name:
+          type: string
+          maxLength: 200
+          minLength: 3
+        subscription_tier:
+          type: string
+          enum: [FREE, STARTER, PROFESSIONAL, ENTERPRISE]
+          default: STARTER
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    User:
+      type: object
+      required:
+        - user_id
+        - email
+        - name
+        - role
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          maxLength: 100
+        role:
+          type: string
+          enum: [ADMIN, MANAGER, AGENT, VIEWER]
+        is_active:
+          type: boolean
+        last_login_at:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Lead:
+      type: object
+      required:
+        - lead_id
+        - lead_name
+        - email
+        - phone
+        - country_code
+        - travel_date
+        - destination
+        - travel_type
+        - num_travelers
+        - lead_source
+      properties:
+        lead_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        lead_name:
+          type: string
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          pattern: '^\+?[1-9]\d{1,14}$'
+          description: E.164 format (e.g., +919876543210)
+        country_code:
+          type: string
+          pattern: '^[A-Z]{2}$'
+          maxLength: 2
+          minLength: 2
+        travel_date:
+          type: string
+          format: date
+        duration_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          nullable: true
+        destination:
+          type: string
+          maxLength: 100
+        travel_type:
+          type: string
+          enum: [DOMESTIC, INTERNATIONAL]
+        num_travelers:
+          type: integer
+          minimum: 1
+          maximum: 500
+        budget:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+        lead_source:
+          type: string
+          enum: [WEBSITE, PHONE, EMAIL, REFERRAL, SOCIAL, OTHER]
+        status:
+          type: string
+          enum: [NEW, CONTACTED, QUOTED, NEGOTIATING, BOOKED, REJECTED, ARCHIVED, CLOSED]
+          default: NEW
+        assigned_to:
+          type: string
+          format: uuid
+          nullable: true
+        created_by:
+          type: string
+          format: uuid
+        notes:
+          type: string
+          maxLength: 1000
+          nullable: true
+        last_contacted_at:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateLeadRequest:
+      type: object
+      required:
+        - lead_name
+        - email
+        - phone
+        - country_code
+        - travel_date
+        - destination
+        - travel_type
+        - num_travelers
+        - lead_source
+      properties:
+        lead_name:
+          type: string
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          pattern: '^\+?[1-9]\d{1,14}$'
+        country_code:
+          type: string
+          pattern: '^[A-Z]{2}$'
+        travel_date:
+          type: string
+          format: date
+        duration_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+        destination:
+          type: string
+          maxLength: 100
+        travel_type:
+          type: string
+          enum: [DOMESTIC, INTERNATIONAL]
+        num_travelers:
+          type: integer
+          minimum: 1
+          maximum: 500
+        budget:
+          type: number
+          format: double
+          minimum: 0
+        lead_source:
+          type: string
+          enum: [WEBSITE, PHONE, EMAIL, REFERRAL, SOCIAL, OTHER]
+        notes:
+          type: string
+          maxLength: 1000
+
+    UpdateLeadRequest:
+      type: object
+      properties:
+        lead_name:
+          type: string
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          pattern: '^\+?[1-9]\d{1,14}$'
+        travel_date:
+          type: string
+          format: date
+        duration_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+        destination:
+          type: string
+          maxLength: 100
+        num_travelers:
+          type: integer
+          minimum: 1
+          maximum: 500
+        budget:
+          type: number
+          format: double
+          minimum: 0
+        notes:
+          type: string
+          maxLength: 1000
+        assigned_to:
+          type: string
+          format: uuid
+          nullable: true
+
+    UpdateLeadStatusRequest:
+      type: object
+      required:
+        - new_status
+      properties:
+        new_status:
+          type: string
+          enum: [NEW, CONTACTED, QUOTED, NEGOTIATING, BOOKED, REJECTED, ARCHIVED, CLOSED]
+        reason:
+          type: string
+          maxLength: 500
+
+    Quote:
+      type: object
+      required:
+        - quote_id
+        - lead_id
+        - org_id
+        - status
+      properties:
+        quote_id:
+          type: string
+          format: uuid
+        lead_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, SENT, ACCEPTED, REJECTED, EXPIRED]
+        total_amount:
+          type: number
+          format: double
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ConvertToQuoteRequest:
+      type: object
+      required:
+        - quote_note
+      properties:
+        quote_note:
+          type: string
+          maxLength: 500
+        estimated_quote_value:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        total_records:
+          type: integer
+        total_pages:
+          type: integer
+        has_next:
+          type: boolean
+        has_prev:
+          type: boolean
+
+    PaginatedLeadsResponse:
+      type: object
+      properties:
+        leads:
+          type: array
+          items:
+            $ref: '#/components/schemas/Lead'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+
+    LoginResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        role:
+          type: string
+          enum: [ADMIN, MANAGER, AGENT, VIEWER]
+        org_id:
+          type: string
+          format: uuid
+
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: session_id
+      description: HTTP-only session cookie
+
+paths:
+  /auth/login:
+    post:
+      summary: User login
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        200:
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LoginResponse'
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: session_id=abcdef123456; Path=/; HttpOnly; Secure; SameSite=Strict
+        400:
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/logout:
+    post:
+      summary: User logout
+      tags:
+        - Authentication
+      security:
+        - cookieAuth: []
+      responses:
+        200:
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        401:
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/me:
+    get:
+      summary: Get current user profile
+      tags:
+        - Authentication
+      security:
+        - cookieAuth: []
+      responses:
+        200:
+          description: User profile retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/User'
+        401:
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /leads:
+    post:
+      summary: Create a new lead
+      tags:
+        - Leads
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLeadRequest'
+      responses:
+        201:
+          description: Lead created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Lead'
+        400:
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        409:
+          description: Duplicate lead exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      summary: List leads with pagination and filters
+      tags:
+        - Leads
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Page number (1-based)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 25
+            maximum: 100
+          description: Records per page
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [NEW, CONTACTED, QUOTED, NEGOTIATING, BOOKED, REJECTED, ARCHIVED, CLOSED]
+          description: Filter by status
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search by name, email, or phone
+        - name: travel_type
+          in: query
+          schema:
+            type: string
+            enum: [DOMESTIC, INTERNATIONAL]
+          description: Filter by travel type
+        - name: destination
+          in: query
+          schema:
+            type: string
+          description: Filter by destination
+        - name: date_from
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Travel date range start
+        - name: date_to
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Travel date range end
+        - name: assigned_to
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by assigned user
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [created_at, travel_date, name, status]
+            default: created_at
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [ASC, DESC]
+            default: DESC
+      responses:
+        200:
+          description: Leads retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PaginatedLeadsResponse'
+        401:
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /leads/{lead_id}:
+    get:
+      summary: Get lead details
+      tags:
+        - Leads
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: lead_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        200:
+          description: Lead retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Lead'
+        404:
+          description: Lead not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      summary: Update lead
+      tags:
+        - Leads
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: lead_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLeadRequest'
+      responses:
+        200:
+          description: Lead updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Lead'
+        404:
+          description: Lead not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      summary: Soft delete lead
+      tags:
+        - Leads
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: lead_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        200:
+          description: Lead deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        404:
+          description: Lead not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /leads/{lead_id}/status:
+    patch:
+      summary: Update lead status
+      tags:
+        - Leads
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: lead_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLeadStatusRequest'
+      responses:
+        200:
+          description: Lead status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        400:
+          description: Invalid status transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        404:
+          description: Lead not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /leads/{lead_id}/convert-to-quote:
+    post:
+      summary: Convert lead to quote
+      tags:
+        - Leads
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: lead_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConvertToQuoteRequest'
+      responses:
+        201:
+          description: Lead converted to quote
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          lead_id:
+                            type: string
+                            format: uuid
+                          quote_id:
+                            type: string
+                            format: uuid
+                          converted_at:
+                            type: string
+                            format: date-time
+        409:
+          description: Lead already converted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /leads/search:
+    get:
+      summary: Full-text search leads
+      tags:
+        - Leads
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query (name, email, phone)
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 25
+      responses:
+        200:
+          description: Search results
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          query:
+                            type: string
+                          results:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Lead'
+                          total_results:
+                            type: integer
+
+tags:
+  - name: Authentication
+    description: User login and session management
+  - name: Leads
+    description: Lead CRUD operations and management
+  - name: Quotes
+    description: Quote management (Phase 2)
