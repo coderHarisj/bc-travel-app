@@ -172,7 +172,6 @@ The Leads Module provides a **centralized, API-first backend** that:
 | Error | HTTP Code | Message |
 |-------|-----------|---------|
 | Validation failed | 400 | `{ "error": "Invalid email format", "field": "email" }` |
-| Duplicate lead | 409 | `{ "error": "Lead with this email/phone combo already exists", "suggestion": "Update existing lead or use different contact" }` |
 | Unauthorized | 403 | `{ "error": "LEAD_CREATE permission denied" }` |
 
 #### 3.1.2 List Leads
