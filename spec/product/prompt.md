@@ -32,29 +32,54 @@ Problem Statement:
 * Booking from the leads using itenary and packages
 * Manage the bookings and payments
 * Manage the agents and their commissions
-* Should need a  
+* Should need a dashboard to track total itenary, total leads, converted leads & payments status.
 
 
 Business Context:
-<why this product exists, revenue, cost, ops, compliance>
+* This product is used to manage the leads from different sources and convert them into customers.
+* It is used to manage the bookings and payments
+* It is used to manage the agents and their commissions
+* It is used to track the leads and bookings
 
 Target Users:
-<who will use this product>
+* Admin
+* Agents
 
 User Scenarios:
-<real-world usage examples>
+* Admin should be able to create a new itenary and package
+* Admin should be able to add agents and their commissions
+* Admin should be able to track the leads and bookings
+* Admin should be able to manage the payments
+* Admin should be able to create Agents
+* Admin should be able to do all things that Agents do
+
+* Agent should be able to create leads
+* Agent should be able to create bookings for the leads
+* Agent should be able to track the leads and bookings
+* Agent should be able to manage the payments   
+* Agent should be able to support by creating the support tickets & manage the tickets
 
 Key Features:
-<feature list>
-
-Integrations:
-<3rd party services, APIs, payment, maps, auth, etc>
+* Dashboard
+* Leads Management
+* Bookings Management
+* Packages Management
+* Quotations Management
+* Itinerary Management
+* Payments Management
+* Agents Management
+* Support Tickets Management
 
 Constraints:
-<time, tech stack, legacy systems, regulatory>
+* Backend: Express JS
+* Frontend: Next JS
+* Database: MySQL
+* AWS: S3, EC2, Amplify
 
 Timeline / Phase:
-<POC / MVP / Phase-1 / Phase-2>
+* MVP
 
 Additional Notes:
-<anything else important>
+* There are gaps in the requirements, please fill them with reasonable assumptions.
+
+* and also tell me which some tech stacks missed inbetween
