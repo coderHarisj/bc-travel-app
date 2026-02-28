@@ -10,6 +10,8 @@ enforce:
   - .rules/component-guidelines.md
   - .rules/ui-system.md
   - .rules/performance.md
+  - .rules/ux-governance.md
+  - .rules/ai-behavior.md
 
 inputs:
   - figma_source (screenshot or figma frame link)
