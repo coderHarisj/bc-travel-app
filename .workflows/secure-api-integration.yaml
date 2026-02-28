@@ -1,0 +1,12 @@
+name: secure-api-integration
+enforce:
+  - .rules/api-communication.md
+  - .rules/security.md
+
+steps:
+  - Create service function
+  - Use axiosInstance
+  - Normalize response
+  - Add asyncThunk
+  - Add loading + error handling
+  - Add test

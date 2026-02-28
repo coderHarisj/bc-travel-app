@@ -1,0 +1,12 @@
+name: production-hardening-check
+enforce:
+  - .rules/security.md
+  - .rules/performance.md
+
+steps:
+  - Scan for console logs
+  - Scan for token misuse
+  - Validate env usage
+  - Confirm interceptor logic
+  - Check lazy loading
+  - Verify no sensitive data exposure
