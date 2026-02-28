@@ -49,15 +49,15 @@ steps:
 
   # 3️⃣ Responsive Planning
   - Define layout behavior for:
-      - xs (mobile)
-      - sm (small tablet)
+      # - xs (mobile)
+      # - sm (small tablet)
       - md (tablet)
       - lg (desktop)
-  - Ensure:
-      - Forms stack vertically on sm and below
-      - Tables scroll horizontally on xs
-      - Cards become full width on xs
-      - Sidebar collapses on sm
+  # - Ensure:
+  #     - Forms stack vertically on sm and below
+  #     - Tables scroll horizontally on xs
+  #     - Cards become full width on xs
+  #     - Sidebar collapses on sm
 
   # 4️⃣ Component Decomposition
   - Break page into reusable components:

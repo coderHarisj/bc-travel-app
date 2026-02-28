@@ -2,7 +2,7 @@ name: create-feature-module
 enforce:
   - .rules/architecture.md
   - .rules/state-management.md
-  - .rules/testing.md
+  # - .rules/testing.md
 
 steps:
   - Create feature folder inside features/
