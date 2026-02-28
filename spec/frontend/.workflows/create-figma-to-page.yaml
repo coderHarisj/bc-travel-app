@@ -1,0 +1,106 @@
+name: create-figma-to-page
+
+description: >
+  Converts a Figma design or screenshot into a fully responsive,
+  theme-driven, production-ready page using MUI and project rules.
+
+enforce:
+  - .rules/architecture.md
+  - .rules/coding-standards.md
+  - .rules/component-guidelines.md
+  - .rules/ui-system.md
+  - .rules/performance.md
+  - .rules/ux-governance.md
+  - .rules/ai-behavior.md
+
+inputs:
+  - figma_source (screenshot or figma frame link)
+  - page_type (form | table | dashboard | custom)
+  - feature_name
+  - page_name
+
+steps:
+
+  # 1️⃣ Design Token Extraction
+  - Analyze figma_source
+  - Extract:
+      - color palette
+      - typography scale
+      - spacing system
+      - border radius scale
+      - shadow system
+  - Map extracted values into MUI theme structure
+  - Update or generate:
+      - theme/palette.ts
+      - theme/typography.ts
+      - theme/spacing.ts
+
+  # 2️⃣ Layout Structure Detection
+  - Detect:
+      - header
+      - sidebar
+      - content area
+      - cards
+      - tables
+      - forms
+  - Define layout grid system using MUI Grid
+  - Avoid fixed widths
+  - Use theme spacing only
+
+  # 3️⃣ Responsive Planning
+  - Define layout behavior for:
+      # - xs (mobile)
+      # - sm (small tablet)
+      - md (tablet)
+      - lg (desktop)
+  # - Ensure:
+  #     - Forms stack vertically on sm and below
+  #     - Tables scroll horizontally on xs
+  #     - Cards become full width on xs
+  #     - Sidebar collapses on sm
+
+  # 4️⃣ Component Decomposition
+  - Break page into reusable components:
+      - Page container
+      - Section components
+      - Card components
+      - Form sections
+      - Table wrapper
+  - Place reusable parts in shared/components if generic
+  - Place feature-specific parts inside feature folder
+
+  # 5️⃣ Feature Integration
+  - If feature folder does not exist:
+      - Run create-feature-module
+  - Place page inside:
+      features/{feature_name}/pages/{page_name}
+  - If page_type is:
+      - form → follow create-form-page structure
+      - table → follow create-data-table-page structure
+
+  # 6️⃣ Clean Code Enforcement
+  - No inline business logic
+  - No API calls in UI components
+  - No hardcoded colors
+  - Use theme tokens only
+  - Use React.memo if component is heavy
+
+  # 7️⃣ Pixel Refinement Pass
+  - Compare layout against figma_source
+  - Adjust:
+      - spacing
+      - font sizes
+      - alignment
+      - border radius
+  - Ensure visual accuracy ≥ 90%
+
+  # 8️⃣ Performance Check
+  - Lazy load page if route-based
+  - Memoize heavy components
+  - Verify no unnecessary re-renders
+
+  # 9️⃣ Output
+  - Generated page
+  - Generated components
+  - Updated theme tokens
+  - Responsive layout verified

@@ -1,0 +1,15 @@
+name: create-form-page
+enforce:
+  - .rules/component-guidelines.md
+  - .rules/security.md
+  - .rules/ui-system.md
+
+steps:
+  - Create page component
+  - Add local form state
+  - Add validation rules
+  - Sanitize inputs before submit
+  - Disable submit during API call
+  - Show loading state
+  - Redirect on success
+  - Show inline error on failure

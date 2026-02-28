@@ -1,0 +1,16 @@
+name: create-data-table-page
+enforce:
+  - .rules/state-management.md
+  - .rules/performance.md
+  - .rules/ui-system.md
+
+steps:
+  - Create asyncThunk for listing API
+  - Connect slice to store
+  - Implement debounced search (300ms)
+  - Add date filters
+  - Add pagination
+  - Add loading state
+  - Add empty state
+  - Add error handling
+  - Make responsive via MUI Grid
