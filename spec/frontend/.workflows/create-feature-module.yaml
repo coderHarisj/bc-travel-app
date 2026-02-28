@@ -1,0 +1,17 @@
+name: create-feature-module
+enforce:
+  - .rules/architecture.md
+  - .rules/state-management.md
+  # - .rules/testing.md
+
+steps:
+  - Create feature folder inside features/
+  - Create pages/
+  - Create components/
+  - Create services/
+  - Create store/
+  - Create utils/
+  - Generate Redux slice
+  - Connect slice to rootReducer
+  - Create service template
+  - Create test files
