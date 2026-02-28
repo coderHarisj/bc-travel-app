@@ -131,3 +131,47 @@
 **Empty States**
 - If an optional data point (e.g., Meal Preference) is empty, do not show the label, or display "Not Specified".
 - If the itinerary has no layovers, don't show the layover divider state.
+
+---
+
+## 6. Accessibility Specification
+
+- **WCAG Considerations:** Ensure accurate `alt` text for airline logos and icons.
+- **Keyboard Navigation Flow:** Focus should move intuitively from top header to actions, and down through interactive elements.
+- **Screen Reader Requirements:** Use semantic data tables or visually hidden text for fare breakdowns and passenger details.
+- **ARIA Requirements:** Use `aria-label` for icon-only buttons (like Share or Download). Alert roles for error banners.
+- **Focus Management:** Modals (like Cancel Flight) must trap focus until dismissed or confirmed.
+- **Contrast Compliance:** All text and critical icons must meet WCAG AA standards (4.5:1 ratio).
+
+---
+
+## 7. State Management Plan
+
+- **Local State:** Modal visibility (open/close state), local loading states for actions like "Downloading PDF".
+- **Global State (Redux or equivalent):** Authentication state. Itinerary data may be cached globally to prevent refetching during same-session navigation.
+- **Derived State:** Date/Time formatting based on raw timestamps. Total travel time calculation (if not provided).
+- **Async Handling:** Fetching itinerary detail via API call on component mount (`useEffect` or specific data-fetching hook).
+- **Error State Handling:** Catch block updating local error state to show banners/toasts. Re-try mechanism if network drops.
+- **Form Isolation Strategy:** Any active input (like Cancellation reason or Email Share fields) should be isolated within their respective modal components.
+
+---
+
+## 8. API Integration Requirements (Only If Inferable)
+
+- **Expected Operation Type:** `GET` request for reading itinerary data; `POST` or `DELETE` for generating cancellation requests.
+- **Trigger Points:** On page load (`GET` id/PNR from route parameters). On Modal Confirm (`POST`).
+- **Payload Structure (only if clearly implied):** For 'Share', implies `{"email": "string"}`. For 'Cancel', implies `{"bookingId": "string", "reason": "string"}`.
+- **Backend Clarifications Required:** Will the backend supply durations natively, or must the frontend calculate the difference between departure and arrival timestamps?
+
+---
+
+## 9. Performance Considerations (Desktop POC)
+
+- **Rendering Complexity:** Low rendering complexity.
+- **Re-render Risks:** Opening local modals shouldn't re-render the entire itinerary heavy-components.
+- **Virtualization Needs:** Not needed (passenger and segment arrays are typically small).
+- **Debounce Requirements:** Not needed (no search features).
+- **Memoization Considerations:** `FlightSegmentCard` and `FareBreakdownTable` can be wrapped in `React.memo` since they are read-only and static once loaded.
+
+---
+
