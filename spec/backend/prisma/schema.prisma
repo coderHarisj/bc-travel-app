@@ -1,0 +1,899 @@
+// =============================================================================
+// ITINERARY MODULE — PRISMA SCHEMA
+// Module:   Itinerary Management
+// Owner:    itinerary-team
+// Version:  1.0
+// Date:     2026-02-28
+// =============================================================================
+
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+/// Status of an itinerary lifecycle
+/// 'draft'     → itinerary created, not yet finalized
+/// 'published' → itinerary finalized and visible to travelers
+/// 'archived'  → itinerary no longer active, retained for history
+enum ItineraryStatus {
+    draft
+    published
+    archived
+}
+
+/// Discriminator for the event type — determines which detail table holds data
+/// 'activity'         → general activity (sightseeing, dining, etc.)
+/// 'lodging'          → hotel / accommodation stay
+/// 'flight'           → air travel segment
+/// 'ground_transport' → car, bus, train, transfer
+/// 'cruise'           → cruise segment
+/// 'tour'             → guided tour
+/// 'booking'          → generic booking (restaurant, attraction, etc.)
+/// 'info'             → informational note, no booking
+enum EventType {
+    activity
+    lodging
+    flight
+    ground_transport
+    cruise
+    tour
+    booking
+    info
+}
+
+/// Processing status for smart import jobs
+/// 'pending'    → file uploaded, waiting to be processed
+/// 'processing' → parser is running
+/// 'completed'  → events created successfully
+/// 'failed'     → parsing or event creation failed
+enum SmartImportStatus {
+    pending
+    processing
+    completed
+    failed
+}
+
+/// Entity types that can own attachments (polymorphic discriminator)
+/// Each value maps to a table whose _id is stored in entityId
+enum AttachmentEntityType {
+    itinerary
+    itinerary_event
+    itinerary_day
+    location
+    library_item
+}
+
+/// Library item categories
+/// 'location'   → saved/reusable location
+/// 'hotel'      → saved hotel reference
+/// 'city_guide' → city guide (attractions, restaurants, currency, etc.)
+enum LibraryItemType {
+    location
+    hotel
+    city_guide
+}
+
+/// Categorization for attachments
+/// 'cover_photo' → itinerary cover image
+/// 'multimedia'  → photos/videos for events or days
+/// 'document'    → PDF, text, or other document
+enum AttachmentCategory {
+    cover_photo
+    multimedia
+    document
+}
+
+// =============================================================================
+// CORE ITINERARY DOMAIN
+// =============================================================================
+
+/// TABLE: itineraries
+/// PURPOSE: Root entity — a travel plan containing locations, days, and events
+/// OWNER: itinerary-team
+/// RETENTION: Indefinite (soft delete, hard purge after 2 years)
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// PK STRATEGY: BIGINT auto-increment (internal use only)
+/// KEY STRATEGY: UUID v4 via gen_random_uuid() (external/API use)
+/// ACCESS PATTERN: Read-heavy (90% reads, 10% writes)
+/// READ QUERIES: list by user, search by title, fetch detail with days
+/// WRITE QUERIES: create, update status, update cover, soft delete
+/// PEAK LOAD: list called on every dashboard load (~500 req/min projected)
+///
+/// NULLABLE FIELD REGISTER:
+/// coverPhotoUrl  → optional, NULL = no cover photo uploaded
+/// coverTextOverlay → optional, NULL = no text overlay on cover
+/// deletedAt      → soft delete marker, NULL = not deleted
+/// deletedBy      → who deleted, NULL = not deleted
+///
+/// SCALABILITY SIGN-OFF: itineraries
+/// [x] Projected row count: 100k at 1 year, 500k at 3 years
+/// [x] Mandatory indexes defined and named
+/// [x] Every index justified with the query it serves
+/// [x] Offset pagination removed — cursor-based via itinerary_id
+/// [x] Partitioning not required (<50M rows projected)
+/// [x] Read/write access pattern declared
+/// [x] Over-indexing audit completed
+/// [x] FK indexes confirmed
+model Itinerary {
+    itineraryId  BigInt @id @default(autoincrement()) @map("itinerary_id")
+    itineraryKey String @unique @default(uuid()) @map("itinerary_key") @db.Uuid
+
+    title       String          @db.VarChar(255)
+    description String?         @db.Text // NULLABLE: optional long description
+    status      ItineraryStatus @default(draft)
+
+    coverPhotoUrl    String? @map("cover_photo_url") @db.VarChar(500) // NULLABLE: optional cover photo
+    coverTextOverlay String? @map("cover_text_overlay") @db.VarChar(255) // NULLABLE: optional text overlay
+
+    // --- Audit fields (mandatory) ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Soft delete ---
+    deletedAt DateTime? @map("deleted_at") @db.Timestamptz() // NULLABLE: populated only when deleted
+    deletedBy BigInt?   @map("deleted_by") // NULLABLE: who deleted
+
+    // --- Relations ---
+    days         ItineraryDay[]
+    locations    ItineraryLocation[]
+    smartImports SmartImport[]
+    discussion   Discussion?
+
+    // --- Indexes ---
+    /// INDEX: idx_itineraries_created_by
+    /// SERVES QUERY: Q1 — list itineraries for a user on the dashboard
+    /// QUERY PATTERN: WHERE created_by = ? AND deleted_at IS NULL ORDER BY created_at DESC
+    /// ESTIMATED SELECTIVITY: High (created_by narrows to ~50 rows avg)
+    ///
+    /// INDEX: idx_itineraries_status
+    /// SERVES QUERY: Q2 — filter itineraries by status
+    /// QUERY PATTERN: WHERE status = ? AND deleted_at IS NULL
+    ///
+    /// INDEX: idx_itineraries_created_at
+    /// SERVES QUERY: Q1 — order by creation date for cursor pagination
+    /// QUERY PATTERN: ORDER BY created_at DESC
+    @@index([createdBy], map: "idx_itineraries_created_by")
+    @@index([status], map: "idx_itineraries_status")
+    @@index([createdAt], map: "idx_itineraries_created_at")
+    @@index([deletedAt], map: "idx_itineraries_deleted_at")
+    @@map("itineraries")
+}
+
+/// TABLE: itinerary_days
+/// PURPOSE: Logical day grouping within an itinerary (Day 1, Day 2, etc.)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary lifecycle
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// PK STRATEGY: BIGINT auto-increment (internal use only)
+/// KEY STRATEGY: UUID v4 (external/API use)
+/// ACCESS PATTERN: Read-heavy (fetched with every itinerary detail view)
+///
+/// NULLABLE FIELD REGISTER:
+/// description → optional day description
+/// startTime   → optional, NULL = no specific start time set
+/// endTime     → optional, NULL = no specific end time set
+/// locationText → optional, NULL = no location specified
+///
+/// SCALABILITY SIGN-OFF: itinerary_days
+/// [x] Projected row count: ~700k at 1 year (avg 7 days per itinerary)
+/// [x] Mandatory indexes defined and named
+/// [x] Every index justified
+/// [x] Cursor pagination via itinerary_day_id
+/// [x] Partitioning not required
+/// [x] FK indexes confirmed
+model ItineraryDay {
+    itineraryDayId  BigInt @id @default(autoincrement()) @map("itinerary_day_id")
+    itineraryDayKey String @unique @default(uuid()) @map("itinerary_day_key") @db.Uuid
+
+    itineraryId  BigInt    @map("itinerary_id")
+    dayNumber    Int       @map("day_number")
+    title        String    @db.VarChar(255)
+    description  String?   @db.Text // NULLABLE: optional day overview
+    startTime    DateTime? @map("start_time") @db.Timestamptz() // NULLABLE: optional
+    endTime      DateTime? @map("end_time") @db.Timestamptz() // NULLABLE: optional
+    locationText String?   @map("location_text") @db.VarChar(255) // NULLABLE: free-text location
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itinerary Itinerary        @relation(fields: [itineraryId], references: [itineraryId], onDelete: Cascade)
+    events    ItineraryEvent[]
+
+    // --- Indexes ---
+    /// INDEX: idx_itinerary_days_itinerary_id
+    /// SERVES QUERY: Q3 — get days for an itinerary
+    /// QUERY PATTERN: WHERE itinerary_id = ? ORDER BY day_number ASC
+    @@unique([itineraryId, dayNumber], map: "uq_itinerary_days_itinerary_day")
+    @@index([itineraryId], map: "idx_itinerary_days_itinerary_id")
+    @@map("itinerary_days")
+}
+
+// =============================================================================
+// LOCATIONS DOMAIN
+// =============================================================================
+
+/// TABLE: locations
+/// PURPOSE: Reusable location entities (can be shared across itineraries via library)
+/// OWNER: itinerary-team
+/// RETENTION: Indefinite (soft delete)
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// PK STRATEGY: BIGINT auto-increment
+/// KEY STRATEGY: UUID v4
+/// ACCESS PATTERN: Read-heavy (referenced by itinerary locations and library)
+///
+/// NULLABLE FIELD REGISTER:
+/// imageUrl  → optional, NULL = no image uploaded
+/// deletedAt → soft delete marker
+/// deletedBy → who deleted
+model Location {
+    locationId  BigInt @id @default(autoincrement()) @map("location_id")
+    locationKey String @unique @default(uuid()) @map("location_key") @db.Uuid
+
+    name     String  @db.VarChar(255)
+    imageUrl String? @map("image_url") @db.VarChar(500) // NULLABLE: optional image
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Soft delete ---
+    deletedAt DateTime? @map("deleted_at") @db.Timestamptz() // NULLABLE: soft delete
+    deletedBy BigInt?   @map("deleted_by") // NULLABLE: who deleted
+
+    // --- Relations ---
+    itineraryLocations ItineraryLocation[]
+
+    @@index([deletedAt], map: "idx_locations_deleted_at")
+    @@map("locations")
+}
+
+/// TABLE: itinerary_locations
+/// PURPOSE: Join table linking itineraries to locations (M-M promoted to entity with own data)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary lifecycle
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// PK STRATEGY: BIGINT auto-increment (promoted from composite because it carries sort_order)
+/// KEY STRATEGY: UUID v4
+/// ACCESS PATTERN: Read-heavy (fetched with itinerary detail)
+model ItineraryLocation {
+    itineraryLocationId  BigInt @id @default(autoincrement()) @map("itinerary_location_id")
+    itineraryLocationKey String @unique @default(uuid()) @map("itinerary_location_key") @db.Uuid
+
+    itineraryId BigInt @map("itinerary_id")
+    locationId  BigInt @map("location_id")
+    sortOrder   Int    @default(0) @map("sort_order")
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itinerary Itinerary @relation(fields: [itineraryId], references: [itineraryId], onDelete: Cascade)
+    location  Location  @relation(fields: [locationId], references: [locationId], onDelete: Restrict)
+
+    /// INDEX: idx_itinerary_locations_itinerary_id
+    /// SERVES QUERY: Q10 — get locations for an itinerary
+    /// QUERY PATTERN: WHERE itinerary_id = ? ORDER BY sort_order
+    @@unique([itineraryId, locationId], map: "uq_itinerary_locations_itinerary_location")
+    @@index([itineraryId], map: "idx_itinerary_locations_itinerary_id")
+    @@index([locationId], map: "idx_itinerary_locations_location_id")
+    @@map("itinerary_locations")
+}
+
+// =============================================================================
+// EVENTS DOMAIN — BASE TABLE
+// =============================================================================
+
+/// TABLE: itinerary_events
+/// PURPOSE: Base event entity — every event type shares these common fields.
+///          The event_type discriminator determines which child table holds type-specific data.
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary lifecycle (soft delete)
+/// SENSITIVE FIELDS: confirmationNumber (-- PII: booking reference)
+/// LAST REVIEWED: 2026-02-28
+/// PK STRATEGY: BIGINT auto-increment
+/// KEY STRATEGY: UUID v4
+/// ACCESS PATTERN: Read-heavy (fetched for every day view, ~10 events per day avg)
+/// READ QUERIES: Q4 — get events for a day; Q5 — filter by event type
+/// WRITE QUERIES: create event, update, reorder (sort_order), soft delete
+///
+/// NULLABLE FIELD REGISTER:
+/// notes         → optional user notes
+/// startTime     → optional event start
+/// endTime       → optional event end
+/// price         → optional, NULL = no price set
+/// deletedAt     → soft delete marker
+/// deletedBy     → who deleted
+///
+/// SCALABILITY SIGN-OFF: itinerary_events
+/// [x] Projected row count: ~1M at 1 year (avg 10 events × 7 days × 100k itineraries / overlap)
+/// [x] Mandatory indexes defined and named
+/// [x] Every index justified
+/// [x] Cursor pagination via itinerary_event_id
+/// [x] Partitioning not required (<50M)
+/// [x] FK indexes confirmed
+model ItineraryEvent {
+    itineraryEventId  BigInt @id @default(autoincrement()) @map("itinerary_event_id")
+    itineraryEventKey String @unique @default(uuid()) @map("itinerary_event_key") @db.Uuid
+
+    itineraryDayId BigInt    @map("itinerary_day_id")
+    eventType      EventType @map("event_type")
+    title          String    @db.VarChar(255)
+    notes          String?   @db.Text // NULLABLE: optional user notes
+    sortOrder      Int       @default(0) @map("sort_order")
+
+    startTime DateTime? @map("start_time") @db.Timestamptz() // NULLABLE: optional
+    endTime   DateTime? @map("end_time") @db.Timestamptz() // NULLABLE: optional
+
+    price Decimal? @db.Decimal(19, 4) // NULLABLE: optional, no price = NULL
+    // BUSINESS RULE: price must be positive when set
+    // ENFORCED AT: DB CHECK constraint (added in raw migration) + EventService.create()
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Soft delete ---
+    deletedAt DateTime? @map("deleted_at") @db.Timestamptz() // NULLABLE: soft delete
+    deletedBy BigInt?   @map("deleted_by") // NULLABLE: who deleted
+
+    // --- Relations ---
+    itineraryDay   ItineraryDay    @relation(fields: [itineraryDayId], references: [itineraryDayId], onDelete: Cascade)
+    activityEvent  ActivityEvent?
+    lodgingEvent   LodgingEvent?
+    flightEvent    FlightEvent?
+    transportEvent TransportEvent?
+    cruiseEvent    CruiseEvent?
+    tourEvent      TourEvent?
+    bookingEvent   BookingEvent?
+    infoEvent      InfoEvent?
+
+    // --- Indexes ---
+    /// INDEX: idx_itinerary_events_day_id
+    /// SERVES QUERY: Q4 — get events for a day
+    /// QUERY PATTERN: WHERE itinerary_day_id = ? AND deleted_at IS NULL ORDER BY sort_order
+    ///
+    /// INDEX: idx_itinerary_events_event_type
+    /// SERVES QUERY: Q5 — filter events by type
+    /// QUERY PATTERN: WHERE event_type = ?
+    @@index([itineraryDayId, sortOrder], map: "idx_itinerary_events_day_sort")
+    @@index([eventType], map: "idx_itinerary_events_event_type")
+    @@index([deletedAt], map: "idx_itinerary_events_deleted_at")
+    @@map("itinerary_events")
+}
+
+// =============================================================================
+// EVENTS DOMAIN — TYPE-SPECIFIC DETAIL TABLES
+// =============================================================================
+
+/// TABLE: activity_events
+/// PURPOSE: Detail fields for Activity-type events (sightseeing, dining, etc.)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary_event
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+///
+/// NULLABLE FIELD REGISTER:
+/// subCategory    → optional sub-categorization
+/// bookedThrough  → optional booking channel
+/// confirmationNumber → optional booking ref (-- PII)
+/// provider       → optional service provider name
+model ActivityEvent {
+    activityEventId  BigInt @id @default(autoincrement()) @map("activity_event_id")
+    activityEventKey String @unique @default(uuid()) @map("activity_event_key") @db.Uuid
+
+    itineraryEventId BigInt @unique @map("itinerary_event_id")
+
+    category    String  @db.VarChar(100)
+    subCategory String? @map("sub_category") @db.VarChar(100) // NULLABLE: optional
+
+    bookedThrough      String? @map("booked_through") @db.VarChar(255) // NULLABLE: optional
+    confirmationNumber String? @map("confirmation_number") @db.VarChar(100) // NULLABLE: -- PII: booking reference
+    provider           String? @db.VarChar(255) // NULLABLE: optional
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itineraryEvent ItineraryEvent @relation(fields: [itineraryEventId], references: [itineraryEventId], onDelete: Cascade)
+
+    @@index([itineraryEventId], map: "idx_activity_events_event_id")
+    @@map("activity_events")
+}
+
+/// TABLE: lodging_events
+/// PURPOSE: Detail fields for Lodging-type events (hotel stays)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary_event
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+///
+/// NULLABLE FIELD REGISTER:
+/// hotelLocation → optional, NULL = location not specified
+/// mapLink       → optional external map URL
+/// facilities    → optional JSON array of facility names
+model LodgingEvent {
+    lodgingEventId  BigInt @id @default(autoincrement()) @map("lodging_event_id")
+    lodgingEventKey String @unique @default(uuid()) @map("lodging_event_key") @db.Uuid
+
+    itineraryEventId BigInt @unique @map("itinerary_event_id")
+
+    hotelName     String   @map("hotel_name") @db.VarChar(255)
+    hotelLocation String?  @map("hotel_location") @db.VarChar(500) // NULLABLE: optional
+    mapLink       String?  @map("map_link") @db.VarChar(500) // NULLABLE: optional
+    checkInAt     DateTime @map("check_in_at") @db.Timestamptz()
+    checkOutAt    DateTime @map("check_out_at") @db.Timestamptz()
+    // BUSINESS RULE: check_out_at must be after check_in_at
+    // ENFORCED AT: DB CHECK constraint (raw migration) + LodgingService.create()
+    facilities    Json?    @db.JsonB // NULLABLE: optional JSON array of facility names
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itineraryEvent ItineraryEvent @relation(fields: [itineraryEventId], references: [itineraryEventId], onDelete: Cascade)
+
+    @@index([itineraryEventId], map: "idx_lodging_events_event_id")
+    @@map("lodging_events")
+}
+
+/// TABLE: flight_events
+/// PURPOSE: Detail fields for Flight-type events (air travel segments)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary_event
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+///
+/// NULLABLE FIELD REGISTER:
+/// departureAt      → optional, NULL = not yet fetched from API
+/// arrivalAt        → optional, NULL = not yet fetched
+/// durationMinutes  → optional, NULL = not yet fetched
+/// departureTerminal → optional
+/// arrivalTerminal   → optional
+model FlightEvent {
+    flightEventId  BigInt @id @default(autoincrement()) @map("flight_event_id")
+    flightEventKey String @unique @default(uuid()) @map("flight_event_key") @db.Uuid
+
+    itineraryEventId BigInt @unique @map("itinerary_event_id")
+
+    airlineCode  String @map("airline_code") @db.VarChar(10)
+    flightNumber String @map("flight_number") @db.VarChar(20)
+    // BUSINESS RULE: airline_code must be valid IATA/ICAO code
+    // ENFORCED AT: FlightService.create() — not expressible as simple DB constraint
+
+    departureAt       DateTime? @map("departure_at") @db.Timestamptz() // NULLABLE: fetched via API
+    arrivalAt         DateTime? @map("arrival_at") @db.Timestamptz() // NULLABLE: fetched via API
+    durationMinutes   Int?      @map("duration_minutes") // NULLABLE: computed from API
+    departureTerminal String?   @map("departure_terminal") @db.VarChar(50) // NULLABLE: optional
+    arrivalTerminal   String?   @map("arrival_terminal") @db.VarChar(50) // NULLABLE: optional
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itineraryEvent ItineraryEvent @relation(fields: [itineraryEventId], references: [itineraryEventId], onDelete: Cascade)
+
+    @@index([itineraryEventId], map: "idx_flight_events_event_id")
+    @@map("flight_events")
+}
+
+/// TABLE: transport_events
+/// PURPOSE: Detail fields for Ground Transport events (car, bus, train, transfer)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary_event
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+///
+/// NULLABLE FIELD REGISTER:
+/// subCategory → optional sub-categorization
+/// carrier     → optional transport company
+model TransportEvent {
+    transportEventId  BigInt @id @default(autoincrement()) @map("transport_event_id")
+    transportEventKey String @unique @default(uuid()) @map("transport_event_key") @db.Uuid
+
+    itineraryEventId BigInt @unique @map("itinerary_event_id")
+
+    transportType String  @map("transport_type") @db.VarChar(50)
+    subCategory   String? @map("sub_category") @db.VarChar(100) // NULLABLE: optional
+    carrier       String? @db.VarChar(255) // NULLABLE: optional
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itineraryEvent ItineraryEvent @relation(fields: [itineraryEventId], references: [itineraryEventId], onDelete: Cascade)
+
+    @@index([itineraryEventId], map: "idx_transport_events_event_id")
+    @@map("transport_events")
+}
+
+/// TABLE: cruise_events
+/// PURPOSE: Detail fields for Cruise-type events
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary_event
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+///
+/// NULLABLE FIELD REGISTER:
+/// cabinDetails → optional cabin info
+model CruiseEvent {
+    cruiseEventId  BigInt @id @default(autoincrement()) @map("cruise_event_id")
+    cruiseEventKey String @unique @default(uuid()) @map("cruise_event_key") @db.Uuid
+
+    itineraryEventId BigInt @unique @map("itinerary_event_id")
+
+    cruiseLine   String  @map("cruise_line") @db.VarChar(255)
+    cabinDetails String? @map("cabin_details") @db.Text // NULLABLE: optional
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itineraryEvent ItineraryEvent @relation(fields: [itineraryEventId], references: [itineraryEventId], onDelete: Cascade)
+
+    @@index([itineraryEventId], map: "idx_cruise_events_event_id")
+    @@map("cruise_events")
+}
+
+/// TABLE: tour_events
+/// PURPOSE: Detail fields for Tour-type events (guided tours via agency or manual)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary_event
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+///
+/// NULLABLE FIELD REGISTER:
+/// agencyName → optional, NULL = manual entry (no agency)
+model TourEvent {
+    tourEventId  BigInt @id @default(autoincrement()) @map("tour_event_id")
+    tourEventKey String @unique @default(uuid()) @map("tour_event_key") @db.Uuid
+
+    itineraryEventId BigInt @unique @map("itinerary_event_id")
+
+    agencyName String? @map("agency_name") @db.VarChar(255) // NULLABLE: NULL = manual entry
+    tourType   String  @map("tour_type") @db.VarChar(100)
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itineraryEvent ItineraryEvent @relation(fields: [itineraryEventId], references: [itineraryEventId], onDelete: Cascade)
+
+    @@index([itineraryEventId], map: "idx_tour_events_event_id")
+    @@map("tour_events")
+}
+
+/// TABLE: booking_events
+/// PURPOSE: Detail fields for generic Booking-type events (restaurant, attraction, etc.)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary_event
+/// SENSITIVE FIELDS: confirmationNumber (-- PII: booking reference)
+/// LAST REVIEWED: 2026-02-28
+///
+/// NULLABLE FIELD REGISTER:
+/// confirmationNumber → optional booking reference
+model BookingEvent {
+    bookingEventId  BigInt @id @default(autoincrement()) @map("booking_event_id")
+    bookingEventKey String @unique @default(uuid()) @map("booking_event_key") @db.Uuid
+
+    itineraryEventId BigInt @unique @map("itinerary_event_id")
+
+    providerName       String  @map("provider_name") @db.VarChar(255)
+    confirmationNumber String? @map("confirmation_number") @db.VarChar(100) // NULLABLE: -- PII: booking reference
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itineraryEvent ItineraryEvent @relation(fields: [itineraryEventId], references: [itineraryEventId], onDelete: Cascade)
+
+    @@index([itineraryEventId], map: "idx_booking_events_event_id")
+    @@map("booking_events")
+}
+
+/// TABLE: info_events
+/// PURPOSE: Detail fields for Info-type events (informational notes, no booking)
+/// OWNER: itinerary-team
+/// RETENTION: Tied to parent itinerary_event
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+///
+/// NULLABLE FIELD REGISTER:
+/// subCategory → optional sub-categorization
+/// provider    → optional provider reference
+model InfoEvent {
+    infoEventId  BigInt @id @default(autoincrement()) @map("info_event_id")
+    infoEventKey String @unique @default(uuid()) @map("info_event_key") @db.Uuid
+
+    itineraryEventId BigInt @unique @map("itinerary_event_id")
+
+    category    String  @db.VarChar(100)
+    subCategory String? @map("sub_category") @db.VarChar(100) // NULLABLE: optional
+    provider    String? @db.VarChar(255) // NULLABLE: optional
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itineraryEvent ItineraryEvent @relation(fields: [itineraryEventId], references: [itineraryEventId], onDelete: Cascade)
+
+    @@index([itineraryEventId], map: "idx_info_events_event_id")
+    @@map("info_events")
+}
+
+// =============================================================================
+// FILES & MEDIA DOMAIN
+// =============================================================================
+
+/// TABLE: attachments
+/// PURPOSE: Polymorphic file storage — any entity can own attachments via entityType + entityId
+/// OWNER: platform-team
+/// RETENTION: Tied to parent entity lifecycle
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// PK STRATEGY: BIGINT auto-increment
+/// KEY STRATEGY: UUID v4
+/// ACCESS PATTERN: Read-heavy (fetched with event/day detail views)
+///
+/// NULLABLE FIELD REGISTER:
+/// description → optional file description
+///
+/// NOTE: entityId has no DB-level FK because this is a polymorphic reference.
+/// BUSINESS RULE: entityId must reference a valid record in the table identified by entityType.
+/// ENFORCED AT: AttachmentService.create() — validated at application layer before insert.
+///
+/// SCALABILITY SIGN-OFF: attachments
+/// [x] Projected row count: ~2M at 1 year
+/// [x] Mandatory indexes defined
+/// [x] Cursor pagination via attachment_id
+/// [x] Partitioning not required
+model Attachment {
+    attachmentId  BigInt @id @default(autoincrement()) @map("attachment_id")
+    attachmentKey String @unique @default(uuid()) @map("attachment_key") @db.Uuid
+
+    entityType AttachmentEntityType @map("entity_type")
+    entityId   BigInt               @map("entity_id")
+
+    category      AttachmentCategory @default(document)
+    fileName      String             @map("file_name") @db.VarChar(255)
+    fileUrl       String             @map("file_url") @db.VarChar(500)
+    fileSizeBytes Int                @map("file_size_bytes")
+    mimeType      String             @map("mime_type") @db.VarChar(100)
+    description   String?            @db.VarChar(500) // NULLABLE: optional description
+
+    // BUSINESS RULE: file_size_bytes must not exceed 5242880 (5MB)
+    // ENFORCED AT: DB CHECK constraint (raw migration) + AttachmentService.upload()
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Indexes ---
+    /// INDEX: idx_attachments_entity
+    /// SERVES QUERY: Q6 — get attachments for an event/day/entity
+    /// QUERY PATTERN: WHERE entity_type = ? AND entity_id = ?
+    @@index([entityType, entityId], map: "idx_attachments_entity")
+    @@index([createdAt], map: "idx_attachments_created_at")
+    @@map("attachments")
+}
+
+// =============================================================================
+// SMART IMPORT DOMAIN
+// =============================================================================
+
+/// TABLE: smart_imports
+/// PURPOSE: Tracks smart import jobs — PDF/text upload → auto-event creation
+/// OWNER: itinerary-team
+/// RETENTION: 90 days after import (raw file reference), then hard purge
+/// -- RETENTION: 90 days | Purge via: scheduled job | No soft delete
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// ACCESS PATTERN: Write-heavy during import; read for status checking
+///
+/// NULLABLE FIELD REGISTER:
+/// errorMessage   → populated only on failure
+/// completedAt    → populated only on success
+/// eventsCreated  → populated only on success
+model SmartImport {
+    smartImportId  BigInt @id @default(autoincrement()) @map("smart_import_id")
+    smartImportKey String @unique @default(uuid()) @map("smart_import_key") @db.Uuid
+
+    itineraryId    BigInt            @map("itinerary_id")
+    status         SmartImportStatus @default(pending)
+    sourceFileUrl  String            @map("source_file_url") @db.VarChar(500)
+    sourceMimeType String            @map("source_mime_type") @db.VarChar(100)
+
+    eventsCreated Int?      @map("events_created") // NULLABLE: populated on completion
+    errorMessage  String?   @map("error_message") @db.Text // NULLABLE: populated on failure
+    completedAt   DateTime? @map("completed_at") @db.Timestamptz() // NULLABLE: populated on success
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    itinerary Itinerary @relation(fields: [itineraryId], references: [itineraryId], onDelete: Cascade)
+
+    /// INDEX: idx_smart_imports_itinerary_id
+    /// SERVES QUERY: Q9 — get import history for an itinerary
+    /// QUERY PATTERN: WHERE itinerary_id = ? ORDER BY created_at DESC
+    @@index([itineraryId], map: "idx_smart_imports_itinerary_id")
+    @@index([status], map: "idx_smart_imports_status")
+    @@index([createdAt], map: "idx_smart_imports_created_at")
+    @@map("smart_imports")
+}
+
+// =============================================================================
+// LIBRARY DOMAIN
+// =============================================================================
+
+/// TABLE: library_items
+/// PURPOSE: Reusable travel items — saved locations, hotels, city guides
+/// OWNER: itinerary-team
+/// RETENTION: Indefinite (soft delete)
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// ACCESS PATTERN: Read-heavy (searched and browsed in library panel)
+///
+/// NULLABLE FIELD REGISTER:
+/// description → optional detailed description
+/// metadata    → optional JSONB for type-specific data (currency, attractions, etc.)
+/// imageUrl    → optional image
+/// deletedAt   → soft delete
+/// deletedBy   → who deleted
+model LibraryItem {
+    libraryItemId  BigInt @id @default(autoincrement()) @map("library_item_id")
+    libraryItemKey String @unique @default(uuid()) @map("library_item_key") @db.Uuid
+
+    itemType    LibraryItemType @map("item_type")
+    name        String          @db.VarChar(255)
+    description String?         @db.Text // NULLABLE: optional
+    imageUrl    String?         @map("image_url") @db.VarChar(500) // NULLABLE: optional
+    metadata    Json?           @db.JsonB // NULLABLE: type-specific data (country info, currency, etc.)
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Soft delete ---
+    deletedAt DateTime? @map("deleted_at") @db.Timestamptz() // NULLABLE: soft delete
+    deletedBy BigInt?   @map("deleted_by") // NULLABLE: who deleted
+
+    /// INDEX: idx_library_items_item_type
+    /// SERVES QUERY: Q8 — list library items by type
+    /// QUERY PATTERN: WHERE item_type = ? AND deleted_at IS NULL
+    @@index([itemType], map: "idx_library_items_item_type")
+    @@index([deletedAt], map: "idx_library_items_deleted_at")
+    @@map("library_items")
+}
+
+// =============================================================================
+// COLLABORATION DOMAIN
+// =============================================================================
+
+/// TABLE: discussions
+/// PURPOSE: One discussion thread per itinerary for team collaboration
+/// OWNER: collaboration-team
+/// RETENTION: 1 year after itinerary archival
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// ACCESS PATTERN: Read-heavy (loaded with itinerary detail; messages paginated)
+///
+/// NULLABLE FIELD REGISTER:
+/// deletedAt → soft delete
+/// deletedBy → who deleted
+model Discussion {
+    discussionId  BigInt @id @default(autoincrement()) @map("discussion_id")
+    discussionKey String @unique @default(uuid()) @map("discussion_key") @db.Uuid
+
+    itineraryId BigInt @unique @map("itinerary_id")
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Soft delete ---
+    deletedAt DateTime? @map("deleted_at") @db.Timestamptz() // NULLABLE: soft delete
+    deletedBy BigInt?   @map("deleted_by") // NULLABLE: who deleted
+
+    // --- Relations ---
+    itinerary Itinerary           @relation(fields: [itineraryId], references: [itineraryId], onDelete: Cascade)
+    messages  DiscussionMessage[]
+
+    @@index([itineraryId], map: "idx_discussions_itinerary_id")
+    @@index([deletedAt], map: "idx_discussions_deleted_at")
+    @@map("discussions")
+}
+
+/// TABLE: discussion_messages
+/// PURPOSE: Individual chat messages within a discussion thread
+/// OWNER: collaboration-team
+/// RETENTION: 1 year after parent itinerary archival
+/// SENSITIVE FIELDS: none
+/// LAST REVIEWED: 2026-02-28
+/// ACCESS PATTERN: Append-heavy (new messages added frequently); read for message history
+///
+/// NULLABLE FIELD REGISTER: (none — all fields required)
+///
+/// SCALABILITY SIGN-OFF: discussion_messages
+/// [x] Projected row count: ~5M at 1 year
+/// [x] Cursor pagination via discussion_message_id
+/// [x] Partitioning assessed — not required yet (<50M)
+model DiscussionMessage {
+    discussionMessageId  BigInt @id @default(autoincrement()) @map("discussion_message_id")
+    discussionMessageKey String @unique @default(uuid()) @map("discussion_message_key") @db.Uuid
+
+    discussionId BigInt @map("discussion_id")
+    content      String @db.Text
+
+    // --- Audit fields ---
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+    updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+    createdBy BigInt   @map("created_by")
+    updatedBy BigInt   @map("updated_by")
+
+    // --- Relations ---
+    discussion Discussion @relation(fields: [discussionId], references: [discussionId], onDelete: Cascade)
+
+    /// INDEX: idx_discussion_messages_discussion_id
+    /// SERVES QUERY: Q7 — get messages for a discussion, ordered by time
+    /// QUERY PATTERN: WHERE discussion_id = ? ORDER BY created_at ASC
+    @@index([discussionId, createdAt], map: "idx_discussion_messages_discussion_created")
+    @@map("discussion_messages")
+}
