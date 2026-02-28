@@ -1,0 +1,76 @@
+flowchart TD
+
+    %% ── Trigger ──────────────────────────────────────────────────────
+    PUSH["👨‍💻 Developer — Code Push / PR Merge"]
+
+    PUSH --> BRANCH{{"Which branch?"}}
+
+    BRANCH -->|"dev/*"| ENV_DEV["🟢 ENV = DEV\nTrigger: push to dev/*\nNo auto-tag | No approval"]
+    BRANCH -->|"test"| ENV_QA["🟡 ENV = QA\nTrigger: PR merge → test\nNo auto-tag | No approval"]
+    BRANCH -->|"uat/*"| ENV_UAT["🟠 ENV = UAT\nTrigger: PR merge → uat/*\nAuto-tag ✅ | Approval for deploy ✅"]
+    BRANCH -->|"prod"| ENV_PROD["🔴 ENV = PROD\nTrigger: PR merge → prod\nAuto-tag ✅ | Approval for deploy ✅"]
+
+    ENV_DEV & ENV_QA & ENV_UAT & ENV_PROD --> STAGE1
+
+    %% ── Stage 1: Source ──────────────────────────────────────────────
+    subgraph PIPELINE ["🔄 Shared CI Pipeline — GitHub Actions"]
+
+        STAGE1["1️⃣ Source Checkout\nactions/checkout@v4"]
+        STAGE1 --> STAGE2
+
+        STAGE2["2️⃣ Docker Build  — Multi-stage\nImage: tms-APP-VERSION-SHA"]
+        STAGE2 -->|"success"| STAGE3
+        STAGE2 -->|"failure"| FAIL
+
+        STAGE3["3️⃣ Test\nUnit Tests — Jest  ✅ all envs\nIntegration Tests — Jest  ✅ QA · UAT · PROD\nLint — ESLint  ✅ DEV · QA · PROD"]
+        STAGE3 -->|"success"| STAGE4
+        STAGE3 -->|"failure"| FAIL
+
+        STAGE4["4️⃣ Snyk Security Scan\nDeps + Docker image\nGate: no Critical / High CVEs"]
+        STAGE4 -->|"success"| STAGE5
+        STAGE4 -->|"failure"| FAIL
+
+        STAGE5["5️⃣ Artifact Publish\nTag: semver + git SHA\nPush → Docker Hub"]
+        STAGE5 -->|"success"| AUTO_TAG
+        STAGE5 -->|"failure"| FAIL
+
+        AUTO_TAG{{"Auto-tag required?\nUAT & PROD only"}}
+        AUTO_TAG -->|"Yes — create git tag"| TAG_CREATE["🏷️ Create Git Tag\ngit tag APP-vVERSION\ngit push origin tag"]
+        AUTO_TAG -->|"No — DEV & QA"| GATE_CHECK
+        TAG_CREATE --> GATE_CHECK
+
+        GATE_CHECK{{"Manual Approval\nRequired?"}}
+        GATE_CHECK -->|"Yes — UAT & PROD"| APPROVAL["✅ Manual Approval Gate\nGitHub Environments\nUAT → Release Manager\nPROD → Sr. Engineer + Release Mgr\n⏱ 24hr timeout → auto-cancel"]
+        GATE_CHECK -->|"No — DEV & QA"| DEPLOY
+        APPROVAL -->|"Approved"| DEPLOY
+        APPROVAL -->|"Rejected / Timeout"| FAIL
+
+        DEPLOY["🚀 Deploy\nServer: Ubuntu 22.04 + PM2\nConfig: .env + AWS Secrets Manager\nHealth check: /health → 200 OK"]
+        DEPLOY -->|"success"| AUDIT
+        DEPLOY -->|"failure"| FAIL
+
+        AUDIT["📋 Audit Log\nGitHub Actions run record\n+ Approval log (UAT & PROD)"]
+        AUDIT --> SUCCESS(["✅ Pipeline Complete\nEnv is live"])
+
+        %% ── Failure path ─────────────────────────────────────────────
+        FAIL["❌ Pipeline Failed\nStage halted immediately"]
+        FAIL --> EMAIL["📧 Email Notification\nBranch · Stage · Commit SHA\nLink to Actions run"]
+        EMAIL --> ROLLBACK["⏪ Rollback Runbook\nRe-deploy previous Docker image tag\nRevert DB migration if applicable"]
+    end
+
+    %% ── Shared infra callouts ────────────────────────────────────────
+    SECRETS["🔐 AWS Secrets Manager\n+ .env per environment\nInjected at PM2 startup"]
+    SECRETS -.->|"runtime injection"| DEPLOY
+
+    %% ── Styling ──────────────────────────────────────────────────────
+    style ENV_DEV    fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    style ENV_QA     fill:#fffde7,stroke:#f9a825,color:#33270a
+    style ENV_UAT    fill:#fff3e0,stroke:#e65100,color:#3e2000
+    style ENV_PROD   fill:#ffebee,stroke:#b71c1c,color:#4e342e
+    style PIPELINE   fill:#f8f9fa,stroke:#455a64,color:#263238
+    style FAIL       fill:#ffcdd2,stroke:#c62828,color:#b71c1c
+    style EMAIL      fill:#fce4ec,stroke:#880e4f,color:#880e4f
+    style ROLLBACK   fill:#fce4ec,stroke:#880e4f,color:#880e4f
+    style SUCCESS    fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    style APPROVAL   fill:#fff9c4,stroke:#f9a825,color:#4e342e
+    style SECRETS    fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
