@@ -1,0 +1,105 @@
+flowchart TD
+
+    MERGE["👨‍💻 PR Merged\nBranch triggers CD pipeline"]
+
+    MERGE --> BRANCH{{"Which branch?"}}
+
+    BRANCH -->|"dev/*"| ENV_DEV["🟢 DEV"]
+    BRANCH -->|"test"| ENV_QA["🟡 QA"]
+    BRANCH -->|"uat/*"| ENV_UAT["🟠 UAT"]
+    BRANCH -->|"prod"| ENV_PROD["🔴 PROD"]
+
+    %% ─────────────────────────────────────────────────────────────────
+    %% FRONTEND PATH — AWS Amplify
+    %% ─────────────────────────────────────────────────────────────────
+    ENV_DEV & ENV_QA & ENV_UAT & ENV_PROD --> FE_AMPLIFY
+
+    subgraph AMPLIFY ["☁️ Frontend — AWS Amplify (all environments)"]
+        FE_AMPLIFY["AWS Amplify detects branch push/merge\nAuto-triggers build"]
+        FE_BUILD["npm ci + npm run build\namplify.yml build spec"]
+        FE_ENV["Inject Secrets\nAWS Secrets Manager injection\nREACT_APP_API_URL per environment"]
+        FE_DEPLOY["Deploy to Amplify CDN\nGlobal edge distribution"]
+        FE_HEALTH{{"Amplify deploy\nsucceeded?"}}
+        FE_OK(["✅ Frontend Live\ndev / qa / uat / tms.example.com"])
+        FE_FAIL["❌ Pipeline Failed\n📧 Email Notification"]
+        FE_ROLLBACK["⏪ Amplify Rollback\nAmplify Console → Redeploy\nprevious version — zero downtime"]
+
+        FE_AMPLIFY --> FE_BUILD --> FE_ENV --> FE_DEPLOY --> FE_HEALTH
+        FE_HEALTH -->|"Yes"| FE_OK
+        FE_HEALTH -->|"No"| FE_FAIL
+        FE_FAIL --> FE_ROLLBACK
+    end
+
+    %% ─────────────────────────────────────────────────────────────────
+    %% BACKEND PATH — EC2 Blue-Green
+    %% ─────────────────────────────────────────────────────────────────
+    ENV_DEV & ENV_QA & ENV_UAT & ENV_PROD --> BE_START
+
+    subgraph BLUEGREEN ["⚙️ Backend — EC2 Single-Machine Docker Blue-Green (Ubuntu 22.04 + NGINX)"]
+
+        BE_START["1️⃣ Determine Active Slot\nSSH into EC2\ncat /opt/tms/active-slot → blue or green\nInactive slot = deploy target"]
+
+        BE_PULL["2️⃣ Pull New Docker Image\ndocker pull tms-backend:VERSION-SHA\nVerify pull success"]
+
+        BE_SECRETS["3️⃣ Inject Config + Secrets\nAWS Secrets Manager get-secret-value\nMerge with .env.environment\nWrite to /opt/tms/green/.env"]
+
+        BE_START_GREEN["4️⃣ Start Inactive Slot Container\ndocker compose up -d\nGreen → port 3002\nBlue stays live on 3001 — zero downtime"]
+
+        BE_HEALTH["5️⃣ Health Check Inactive Slot\nDirect port check — NOT through NGINX\nBackend: localhost:3002/api/health → 200\nDB:      localhost:3002/api/health/db → 200\nRetries: 5 × 10s intervals"]
+
+        BE_HEALTH_PASS{{"All health checks\npassed?"}}
+
+        BE_HEALTH_PASS -->|"No — abort"| BE_ABORT["❌ Abort Deployment\nStop Green container\nBlue remains live\n📧 Email Notification"]
+
+        BE_GATE{{"Manual Approval\nRequired?\nUAT + PROD only"}}
+
+        BE_HEALTH_PASS -->|"Yes"| BE_GATE
+
+        BE_GATE -->|"No — DEV + QA"| BE_SWITCH
+        BE_GATE -->|"Yes — UAT + PROD"| BE_APPROVAL["✅ Manual Approval Gate\nGitHub Environments\nUAT → Release Manager\nPROD → Sr. Engineer + Release Mgr\n⏱ 24hr timeout → auto-cancel"]
+
+        BE_APPROVAL -->|"Approved"| BE_SWITCH
+        BE_APPROVAL -->|"Rejected / Timeout"| BE_ABORT
+
+        BE_SWITCH["6️⃣ Switch Traffic — NGINX Reload\nnginx -t  validate config\nUpdate upstream to new slot port\nnginx -s reload  zero-downtime\necho green > /opt/tms/active-slot"]
+
+        BE_VALIDATE["7️⃣ Post-Switch Validation Window\nMonitor for 10 minutes\nPoll /api/health through NGINX\nCheck error rate"]
+
+        BE_VALIDATE_PASS{{"10-min window\npassed cleanly?"}}
+
+        BE_SWITCH --> BE_VALIDATE --> BE_VALIDATE_PASS
+
+        BE_VALIDATE_PASS -->|"No — rollback"| BE_AUTO_ROLLBACK["⏪ Automatic Rollback\nSwitch NGINX back to Blue\nnginx -s reload\nBlue becomes active again\n📧 Email Notification"]
+
+        BE_VALIDATE_PASS -->|"Yes"| BE_TEARDOWN["8️⃣ Teardown Old Slot\ndocker compose down\ndocker image prune -f\nOld port freed"]
+
+        BE_AUDIT["9️⃣ Update Slot State\necho blue/green > /opt/tms/active-slot\nCycle: Blue → Green → Blue → Green\n📋 Audit log — GitHub Actions run record"]
+
+        BE_TEARDOWN --> BE_AUDIT --> BE_OK(["✅ Backend Live\nNew slot serving all traffic"])
+
+        BE_START --> BE_PULL --> BE_SECRETS --> BE_START_GREEN --> BE_HEALTH --> BE_HEALTH_PASS
+    end
+
+    %% ─────────────────────────────────────────────────────────────────
+    %% Shared callouts
+    %% ─────────────────────────────────────────────────────────────────
+    NGINX_NOTE["🌐 NGINX — Backend only\nPort 80/443 → active slot port\nBlue: 3001 | Green: 3002\nFrontend served via Amplify CDN"]
+    NGINX_NOTE -.-> BE_SWITCH
+
+    %% ─────────────────────────────────────────────────────────────────
+    %% Styling
+    %% ─────────────────────────────────────────────────────────────────
+    style AMPLIFY     fill:#e8f0fe,stroke:#1a73e8,color:#0d47a1
+    style BLUEGREEN   fill:#f8f9fa,stroke:#455a64,color:#263238
+    style ENV_DEV     fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    style ENV_QA      fill:#fffde7,stroke:#f9a825,color:#33270a
+    style ENV_UAT     fill:#fff3e0,stroke:#e65100,color:#3e2000
+    style ENV_PROD    fill:#ffebee,stroke:#b71c1c,color:#4e342e
+    style FE_FAIL     fill:#ffcdd2,stroke:#c62828,color:#b71c1c
+    style FE_ROLLBACK fill:#fce4ec,stroke:#880e4f,color:#880e4f
+    style FE_OK       fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    style BE_ABORT    fill:#ffcdd2,stroke:#c62828,color:#b71c1c
+    style BE_AUTO_ROLLBACK fill:#fce4ec,stroke:#880e4f,color:#880e4f
+    style BE_OK       fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    style BE_APPROVAL fill:#fff9c4,stroke:#f9a825,color:#4e342e
+    style NGINX_NOTE  fill:#f1f8e9,stroke:#558b2f,color:#33691e
